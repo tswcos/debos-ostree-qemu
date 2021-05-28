@@ -1,5 +1,5 @@
 FILESYSTEM?=ext4
-FSUUID:=$(shell uuidgen)
+FSUUID?=10ee6979-52b6-4dab-a8e4-dfa2868645be
 
 build_qemu_img:
 	docker run --rm --interactive --tty --device /dev/kvm \
