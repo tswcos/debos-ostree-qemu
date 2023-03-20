@@ -1,0 +1,118 @@
+{{- $architecture := or .architecture "amd64" -}}
+{{- $partitiontype := or .partitiontype "gpt" -}}
+{{- $ptuuid := or .ptuuid "" -}}
+{{- $bios_partuuid := or .bios_partuuid "" -}}
+{{- $bios_fsuuid := or .bios_fsuuid "" -}}
+{{- $rootfs_partuuid := or .rootfs_partuuid "" -}}
+{{- $rootfs_fsuuid := or .rootfs_fsuuid "" -}}
+{{- $rootfs_filesystem := or .rootfs_filesystem "ext4" -}}
+{{- $rootfs_start := or .rootfs_start "2MiB" -}}
+{{- $dummy_vfat_partuuid := or .dummy_vfat_partuuid "" -}}
+{{- $dummy_vfat_fsuuid := or .dummy_vfat_fsuuid "" -}}
+{{- $kernel_ver := or .kernel_ver "5.10.0-20-amd64" -}}
+
+architecture: {{ $architecture }}
+
+actions:
+  - action: debootstrap
+    suite: bullseye
+
+  - action: apt
+    packages:
+      - util-linux
+      - e2fsprogs
+      - btrfs-progs
+      - xfsprogs
+      - linux-image-amd64
+      - initramfs-tools
+      - grub-pc
+      - ostree
+      - ostree-boot
+      - libostree-1-1
+      - vim
+
+  - action: run
+    chroot: true
+    command: echo "qemu" > /etc/hostname
+
+  - action: run
+    chroot: true
+    command: sed -i 's@root:[^:]*:@root::@' /etc/shadow
+
+  - action: run
+    chroot: true
+    command: sed -i 's#quiet#console=tty0 console=ttyS0,115200n8 rootwait rw quiet#g' /etc/default/grub
+
+  - action: run
+    chroot: true
+    description: don't hide boot messages in grub
+    command: sed -i 's/quiet//g' /etc/default/grub
+
+  - action: run
+    description: "Creating symlink to adapt ostree"
+    command: |
+      mkdir -p $RECIPEDIR/ostree/repo
+      cd $RECIPEDIR/ostree; ostree --repo=repo --mode=archive-z2 init
+
+  - action: run
+    chroot: true
+    description: "Adapting /usr/lib/modules layout ostree"
+    command: |
+      cp vmlinuz /usr/lib/modules/{{ $kernel_ver }}
+      cp initrd.img /usr/lib/modules/{{ $kernel_ver }}
+      mv /etc /usr
+
+  - action: ostree-commit
+    description: "Committing to ostree"
+    repository: ostree/repo
+    branch: master
+    subject: "Commit rootfs"
+
+  - action: image-partition
+    imagename: qemu-{{ $rootfs_filesystem }}.img
+    imagesize: 6GiB
+    partitiontype: {{ $partitiontype }}
+    ptuuid: {{ $ptuuid }}
+    partitions:
+{{- if eq $partitiontype "gpt" }}
+      - name: BIOS
+        fs: fat32
+        start: 1MiB
+        end: {{ $rootfs_start }}
+        flags: [ bios_grub ]
+        partuuid: {{ $bios_partuuid }}
+        fsuuid: {{ $bios_fsuuid }}
+{{- end }}
+      - name: ROOTFS
+        fs: {{ $rootfs_filesystem }}
+        start: {{ $rootfs_start }}
+        end: 100%
+{{- if eq $partitiontype "gpt" }}
+        partuuid: {{ $rootfs_partuuid }}
+{{- end }}
+        fsuuid: {{ $rootfs_fsuuid }}
+    mountpoints:
+      - mountpoint: /
+        partition: ROOTFS
+
+  - action: ostree-deploy
+    description: "Deploying ostree"
+    repository: ostree/repo
+    branch: master
+    os: debian
+
+  - action: run
+    description: "Copying /usr/etc/ to /etc"
+    command: cp -r $ROOTDIR/usr/etc $ROOTDIR/etc
+
+  - action: run
+    chroot: true
+    command: grub-install --target=i386-pc --recheck ${IMAGE}
+
+  - action: run
+    chroot: true
+    command: update-grub
+
+  - action: run
+    chroot: true
+    command: sed -i 's/vda/sda/g' /boot/grub/grub.cfg
